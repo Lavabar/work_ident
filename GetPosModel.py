@@ -39,9 +39,9 @@ class GetPosModel():
 		self.zone_df = pd.read_sql_query("SELECT zone_id, zone_name FROM zones", self.conn)
 		self.tag_df = pd.read_sql_query("SELECT tag_id, tag_name FROM tags", self.conn)
 		
-		connection = pika.BlockingConnection(pika.ConnectionParameters('192.168.4.101', credentials = pika.PlainCredentials('User1', 'user1')))
+		#connection = pika.BlockingConnection(pika.ConnectionParameters('192.168.4.101', credentials = pika.PlainCredentials('User1', 'user1')))
 
-		#connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
+		connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
 		channel = connection.channel()
 
 		channel.queue_declare(queue='locations_ML')
