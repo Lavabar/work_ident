@@ -71,9 +71,12 @@ class GetPosModel():
 		except:
 			self.get_data()
 			self.write_conf()
-			
+		
+		# get list of labels
 		self.labels = self.labels.drop_duplicates().reset_index(drop=True)
 
+	# method realising full process of collecting data
+	# result => "df_in.xlsx" containing all training data
 	def get_data(self):	
 		n_rm = len(self.zone_df.index)
 		diff1 = pd.Series([])
@@ -90,13 +93,10 @@ class GetPosModel():
 					
 				nonlocal messages, diff1, diff2, diff3, curr_name
 				
-				#print ("Received %r" % (body,))
 				data = json.loads(body)
-				#print (data)
 				l = location_record_ML(data['id'], data['name'], pd.Timestamp.now(), location(data['last_pos']['x'], data['last_pos']['y'], data['last_pos']['z']), data['diff1'], data['diff2'], data['diff3'])
 				
 				self.labels = self.labels.append(curr_name)
-				#lb_name = labels[len(labels) - 1]
 				diff1 = diff1.append(l.diff1)
 				diff2 = diff2.append(l.diff2)
 				diff3 = diff3.append(l.diff3)
@@ -147,8 +147,7 @@ class GetPosModel():
 			n = data.shape[0] - history_length
 			
 			lbls = dict((self.labels[self.labels.index[i]], i) for i in range(len(self.labels)))
-			#print(lbls)
-			#input()
+			
 			X_train = np.zeros((n, history_length, 3))
 			Y_train = np.zeros(n)
 
@@ -158,9 +157,6 @@ class GetPosModel():
 				X_train[i, :, 2] = data["z"][(0 + i):(history_length + i)]
 			
 				Y_train[i] = lbls[data["label"][data.index[0]]]
-    
-			#X_train1 = np.concatenate((X_train_x, X_train_y, X_train_z), axis=1)
-			#Y_train1 = np.concatenate((Y_train_x, Y_train_y, Y_train_z), axis=1)
     
 			return X_train, Y_train
 
@@ -209,39 +205,25 @@ class GetPosModel():
 		self.max_x = np.abs(self.df_in["x"]).max()
 		self.max_y = np.abs(self.df_in["y"]).max()
 		self.max_z = np.abs(self.df_in["z"]).max()
-		
-	def check(self, X):
-		for k in X:
-			if len(X[k]) < self.history_length:
-				return False
-
-		return True	
-		
+				
 	def work(self):
 
 		print ('Waiting for messages...')
 		
 		def callback(ch, method, properties, body):
-			#print ("Received %r" % (body,))
 			data = json.loads(body)
-			#print (data)
 			l = location_record_ML(data['id'], data['name'], pd.Timestamp.now(), location(data['last_pos']['x'], data['last_pos']['y'], data['last_pos']['z']), data['diff1'], data['diff2'], data['diff3'])
-			#print("%s %s %s" % (l.name, l.diff1, l.diff2))
-			#l = location_record(data['id'])
-			#print ("x=%s y=%s " % (l.last_pos.x, l.last_pos.y))
-			#print(l.name)
+
 			self.q_vals[l.name].put(l)
 
 		self.loc_ch.basic_consume(callback,
 							queue='locations_ML',
 							no_ack=True)
 		t = threading.Thread(target=self.loc_ch.start_consuming)
-		#t = threading.Thread(target=tmp_foo)
 		t.start()
 		
 		idx2lbls = dict((i, self.labels[self.labels.index[i]]) for i in range(len(self.labels.index)))
-		#X = dict(("Sim_Tag_" + str(k), []) for k in range(self.nmet))
-		#while not self.check(X):
+
 		def proc_mes(que):
 			X = []
 			name = ""
@@ -249,17 +231,13 @@ class GetPosModel():
 			for _ in range(self.history_length):
 				item = que.get()
 				name = item.name
-				#X["met0"].append([item.diff1 / self.max_x, item.diff2 / self.max_y, item.diff3 / self.max_z])
-				#X[X.keys[item.name]].append([float(item.diff1) / self.max_x, float(item.diff2) / self.max_y, float(item.diff3) / self.max_z])
 				X.append([float(item.diff1) / self.max_x, float(item.diff2) / self.max_y, float(item.diff3) / self.max_z])
 				datetime = item.datetime
 			self.forpred.put({"name": name, "data": np.asarray([X]), "time": datetime})
 			
 			while not self.killall:
 				item = que.get()
-				#X["met0"].append([item.diff1 / self.max_x, item.diff2 / self.max_y, item.diff3 / self.max_z])
 				X.append([float(item.diff1) / self.max_x, float(item.diff2) / self.max_y, float(item.diff3) / self.max_z])
-				#y = np.argmax(self.model.predict(np.asarray([np.roll(np.asarray(X["met0"]), -1)[:self.history_length]])))
 				self.forpred.put({"name": item.name, "data": np.asarray([X[len(X) - self.history_length:]]), "time": item.datetime})
 				
 			#conn.close()
@@ -294,9 +272,6 @@ class GetPosModel():
 				self.cur.execute(tgznd_req, (str(uuid.uuid4()), tgid, znid, a["time"], pd.Timedelta(100, "ms")))
 		except KeyboardInterrupt:
 			self.killall = True
-		#t = threading.Thread(target=self.loc_ch.start_consuming)
-		#t = threading.Thread(target=tmp_foo)
-		#t.start()
 		
 		
 if __name__ == "__main__":
