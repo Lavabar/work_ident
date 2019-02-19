@@ -18,31 +18,44 @@ import uuid
 
 class GetPosModel():
 
-	def __init__(self, data_path = "data\\", num_classes = 9, history_length = 10, nmet=1, dbparams={"user": "postgres", "passwd": "1", "host": "localhost", "port": "5432", "dbname": "postgres"}):
-		self.num_classes = num_classes
-		self.history_length = history_length
-		self.model = Sequential()
-		self.max_x = 1
-		self.max_y = 1
-		self.max_z = 1
-		self.q_vals = queue.Queue()
-		self.nmet = nmet
-		self.labels = pd.Series([])
-		self.killall = False
-		self.conf_path = "conf_anch_zones.json"
-		self.last_conf = dict()
-		self.n_msrs = 1000
+	def __init__(self, data_path = "data\\",
+						num_classes = 9,
+						history_length = 10,
+						dbparams={"user": "postgres",
+									"passwd": "1",
+									"host": "localhost",
+									"port": "5432",
+									"dbname": "postgres"}):
+				
+		self.num_classes = num_classes # number of workplaces (DEPRECATED)
+		self.history_length = history_length # number of measures needed for classification workplaces
+		self.model = Sequential() # model for classification workplaces
+		self.max_x = 1 # normalizing value for diff1
+		self.max_y = 1 # normalizing value for diff2
+		self.max_z = 1 # normalizing value for diff3
+		self.forpred = queue.Queue() # queue for model classificating workplaces
+		self.labels = pd.Series([]) # container for names of workplaces
+		self.killall = False # flag for stop all threads
+		self.conf_path = "conf_anch_zones.json" # path to current configuration of workplaces and anchors
+		self.last_conf = dict() # dictionary containing configuration
+		self.n_msrs = 1000 # number of diffs should be collected for one workplace
 		
-		self.conn = psycopg2.connect(user=dbparams["user"], password=dbparams["passwd"], host=dbparams["host"], port=dbparams["port"], dbname=dbparams["dbname"])
-		self.cur = self.conn.cursor()
+		self.pg_conn = psycopg2.connect(user=dbparams["user"],
+										password=dbparams["passwd"],
+										host=dbparams["host"],
+										port=dbparams["port"],
+										dbname=dbparams["dbname"]) # connection to postgre-db
+		self.cur = self.pg_conn.cursor() # cursor for postgre connection
 		
-		self.zone_df = pd.read_sql_query("SELECT zone_id, zone_name FROM zones", self.conn)
-		self.tag_df = pd.read_sql_query("SELECT tag_id, tag_name FROM tags", self.conn)
-		
-		#connection = pika.BlockingConnection(pika.ConnectionParameters('192.168.4.101', credentials = pika.PlainCredentials('User1', 'user1')))
+		self.zone_df = pd.read_sql_query("SELECT zones.zone_id, zones.zone_name FROM zones " + \
+						"inner join workplaces on zones.zone_id=workplaces.wrkpl_zone_id", self.pg_conn) # dataframe for zones
+		self.tag_df = pd.read_sql_query("SELECT tag_id, tag_name FROM tags", self.pg_conn) # dataframe for tags
+		self.q_vals = dict((self.tag_df["tag_name"][self.tag_df.index[idx]], queue.Queue())
+							for idx in range(len(self.tag_df.index))) # dictionary of queues for accumulating measures
+		#self.rb_conn = pika.BlockingConnection(pika.ConnectionParameters('192.168.4.101', credentials = pika.PlainCredentials('User1', 'user1')))
 
-		connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-		channel = connection.channel()
+		self.rb_conn = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
+		channel = self.rb_conn.channel()
 
 		channel.queue_declare(queue='locations_ML')
 
@@ -104,7 +117,7 @@ class GetPosModel():
 			write_conf()
 			
 		self.labels = self.labels.drop_duplicates().reset_index(drop=True)
-	
+
 	def read_conf(self):
 		f = open(self.conf_path, "r")
 		self.last_conf = json.load(f)
@@ -116,7 +129,7 @@ class GetPosModel():
 		f.close()
 	
 	def get_conf(self):
-		zones = pd.read_sql_query("SELECT zone_id, zone_name,  FROM zones", self.conn) # FILTER TO GET RabMest
+		zones = pd.read_sql_query("SELECT zone_id, zone_name,  FROM zones", self.pg_conn) # FILTER TO GET RabMest
 		# GETTING ANCHORS
 		
 		return {"zones": zones,
@@ -129,7 +142,7 @@ class GetPosModel():
 			return False
 			#pass
 		return True
-		
+
 	def getDataset(self):
 		def make_dataset(data, history_length):
 			n = data.shape[0] - history_length
@@ -206,21 +219,9 @@ class GetPosModel():
 		return True	
 		
 	def work(self):
-		
-		#engine = create_engine("postgresql+pypostgresql://postgres:1@localhost:5432/postgres")
 
-		#conn = engine.connect()
-		#conn.begin()
-	
-		connection = pika.BlockingConnection(pika.ConnectionParameters('192.168.4.101', credentials = pika.PlainCredentials('User1', 'user1')))
-
-		#connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-		channel = connection.channel()
-
+		channel = self.rb_conn.channel()
 		channel.queue_declare(queue='locations_ML')
-		
-		self.q_vals = dict((self.tag_df["tag_name"][self.tag_df.index[idx]], queue.Queue()) for idx in range(len(self.tag_df.index)))
-		self.forpred = queue.Queue()
 		#print(self.q_vals)
 		print ('Waiting for messages...')
 		
@@ -275,7 +276,7 @@ class GetPosModel():
 		
 		def cmmt_pg():
 			while not self.killall:
-				self.conn.commit()
+				self.pg_conn.commit()
 				sleep(1)
 		
 		commit_thread = threading.Thread(target=cmmt_pg)
