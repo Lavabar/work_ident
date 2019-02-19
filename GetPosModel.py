@@ -39,7 +39,7 @@ class GetPosModel():
 		self.conf_path = "conf_anch_zones.json" # path to current configuration of workplaces and anchors
 		self.last_conf = dict() # dictionary containing configuration
 		self.n_msrs = 1000 # number of diffs should be collected for one workplace
-		
+		self.df_in = pd.DataFrame(columns=["x", "y", "z", "label"]) # dataframe for containing train data
 		self.pg_conn = psycopg2.connect(user=dbparams["user"],
 										password=dbparams["passwd"],
 										host=dbparams["host"],
@@ -52,71 +52,70 @@ class GetPosModel():
 		self.tag_df = pd.read_sql_query("SELECT tag_id, tag_name FROM tags", self.pg_conn) # dataframe for tags
 		self.q_vals = dict((self.tag_df["tag_name"][self.tag_df.index[idx]], queue.Queue())
 							for idx in range(len(self.tag_df.index))) # dictionary of queues for accumulating measures
+		
+		# make connection to rabbitMQ and declare locations channel
 		#self.rb_conn = pika.BlockingConnection(pika.ConnectionParameters('192.168.4.101', credentials = pika.PlainCredentials('User1', 'user1')))
-
 		self.rb_conn = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-		channel = self.rb_conn.channel()
-
-		channel.queue_declare(queue='locations_ML')
-
-		def get_data():	
-			n_rm = len(self.zone_df.index)
-			df = pd.DataFrame(columns=["x", "y", "z", "label"])
-			diff1 = pd.Series([])
-			diff2 = pd.Series([])
-			diff3 = pd.Series([])
-			
-			for idx in self.zone_df.index:
-				curr_name = str(self.zone_df.loc[idx, "zone_name"])
-				input("Положите метку на РМ: %s. Нажмите Enter..." % (curr_name))
-				print("Собираю данные...")
-				messages = 0
-				
-				def callback(ch, method, properties, body):
-					
-					nonlocal messages, diff1, diff2, diff3, curr_name
-					
-					#print ("Received %r" % (body,))
-					data = json.loads(body)
-					#print (data)
-					l = location_record_ML(data['id'], data['name'], pd.Timestamp.now(), location(data['last_pos']['x'], data['last_pos']['y'], data['last_pos']['z']), data['diff1'], data['diff2'], data['diff3'])
-					
-					self.labels = self.labels.append(curr_name)
-					#lb_name = labels[len(labels) - 1]
-					diff1 = diff1.append(l.diff1)
-					diff2 = diff2.append(l.diff2)
-					diff3 = diff3.append(l.diff3)
-					
-					messages += 1
-					if messages >= 1000:
-						ch.stop_consuming()
-					
-
-				channel.basic_consume(callback,
-									queue='locations_ML',
-									no_ack=True)
-				channel.start_consuming()
+		self.loc_ch = self.rb_conn.channel()
+		self.loc_ch.queue_declare(queue='locations_ML')
 		
-			df.loc[:,"x"] = diff1
-			df.loc[:,"y"] = diff2
-			df.loc[:,"z"] = diff3
-			df.loc[:,"label"] = self.labels
-
-			self.df_in = df
-			self.df_in.to_excel("df_in.xlsx")
-		
+		# process of checking actuality of configuration
+		# and getting train data if needed
 		try:
-			read_conf()
-			if conf_changed():
-				collect_data()
+			self.read_conf()
+			if self.conf_changed():
+				raise BaseException("Configuration changed... For correct work data update is needed")
 			else:
 				self.df_in = pd.read_excel("df_in.xlsx")
 				self.labels = self.df_in["label"]
 		except:
-			get_data()
-			write_conf()
+			self.get_data()
+			self.write_conf()
 			
 		self.labels = self.labels.drop_duplicates().reset_index(drop=True)
+
+	def get_data(self):	
+		n_rm = len(self.zone_df.index)
+		diff1 = pd.Series([])
+		diff2 = pd.Series([])
+		diff3 = pd.Series([])
+			
+		for idx in self.zone_df.index:
+			curr_name = str(self.zone_df.loc[idx, "zone_name"])
+			input("Положите метку на РМ: %s. Нажмите Enter..." % (curr_name))
+			print("Собираю данные...")
+			messages = 0
+				
+			def callback(ch, method, properties, body):
+					
+				nonlocal messages, diff1, diff2, diff3, curr_name
+				
+				#print ("Received %r" % (body,))
+				data = json.loads(body)
+				#print (data)
+				l = location_record_ML(data['id'], data['name'], pd.Timestamp.now(), location(data['last_pos']['x'], data['last_pos']['y'], data['last_pos']['z']), data['diff1'], data['diff2'], data['diff3'])
+				
+				self.labels = self.labels.append(curr_name)
+				#lb_name = labels[len(labels) - 1]
+				diff1 = diff1.append(l.diff1)
+				diff2 = diff2.append(l.diff2)
+				diff3 = diff3.append(l.diff3)
+				
+				messages += 1
+				if messages >= 1000:
+					ch.stop_consuming()
+				
+			self.loc_ch.basic_consume(callback,
+								queue='locations_ML',
+								no_ack=True)
+			self.loc_ch.start_consuming()
+	
+			self.df_in.loc[:,"x"] = diff1
+			self.df_in.loc[:,"y"] = diff2
+			self.df_in.loc[:,"z"] = diff3
+			self.df_in.loc[:,"label"] = self.labels
+		
+		self.df_in.to_excel("df_in.xlsx")
 
 	def read_conf(self):
 		f = open(self.conf_path, "r")
@@ -220,9 +219,6 @@ class GetPosModel():
 		
 	def work(self):
 
-		channel = self.rb_conn.channel()
-		channel.queue_declare(queue='locations_ML')
-		#print(self.q_vals)
 		print ('Waiting for messages...')
 		
 		def callback(ch, method, properties, body):
@@ -236,10 +232,10 @@ class GetPosModel():
 			#print(l.name)
 			self.q_vals[l.name].put(l)
 
-		channel.basic_consume(callback,
+		self.loc_ch.basic_consume(callback,
 							queue='locations_ML',
 							no_ack=True)
-		t = threading.Thread(target=channel.start_consuming)
+		t = threading.Thread(target=self.loc_ch.start_consuming)
 		#t = threading.Thread(target=tmp_foo)
 		t.start()
 		
@@ -298,7 +294,7 @@ class GetPosModel():
 				self.cur.execute(tgznd_req, (str(uuid.uuid4()), tgid, znid, a["time"], pd.Timedelta(100, "ms")))
 		except KeyboardInterrupt:
 			self.killall = True
-		#t = threading.Thread(target=channel.start_consuming)
+		#t = threading.Thread(target=self.loc_ch.start_consuming)
 		#t = threading.Thread(target=tmp_foo)
 		#t.start()
 		
